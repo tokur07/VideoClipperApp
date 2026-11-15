@@ -5,23 +5,21 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PorterDuff
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.media.MediaMetadataRetriever
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.Locale
+import kotlin.math.ceil
 
 object MediaProcessor {
-
-    private data class TimedOverlay(
-        val imageFile: File,
-        val startSec: Double?,
-        val endSec: Double?
-    )
 
     private data class SrtCue(
         val startSec: Double,
@@ -62,6 +60,19 @@ object MediaProcessor {
             .joinToString(":")
     }
 
+    private fun getVideoDurationSec(path: String): Double {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            val durMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            durMs / 1000.0
+        } catch (_: Exception) {
+            0.0
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+    }
+
     private fun parseSrtCues(srtFile: File): List<SrtCue> {
         if (!srtFile.exists()) return emptyList()
         val raw = srtFile.readText(Charsets.UTF_8).replace("\r\n", "\n")
@@ -78,7 +89,7 @@ object MediaProcessor {
 
             val startMs = SubtitleUtils.parseTimeToMs(parts[0].trim()) ?: continue
             val endMs = SubtitleUtils.parseTimeToMs(parts[1].trim()) ?: continue
-            val text = lines.drop(timeIdx + 1).joinToString("\n").trim()
+            val text = lines.drop(timeIdx + 1).joinToString(" ").trim()
             if (text.isNotEmpty() && endMs > startMs) {
                 result.add(SrtCue(startMs / 1000.0, endMs / 1000.0, text))
             }
@@ -86,23 +97,19 @@ object MediaProcessor {
         return result
     }
 
-    private fun createStaticTextOverlay(
-        cacheDir: File,
+    private fun drawStaticLayer(
+        canvas: Canvas,
+        width: Int,
+        height: Int,
         hookText: String,
         hookStyle: HookStyle,
         watermarkText: String,
         watermarkPos: WatermarkPos
-    ): File {
-        val width = 1080
-        val height = 1920
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-
-        // 1. Gambar Hook / Judul Atas
+    ) {
         if (hookText.isNotBlank()) {
             val maxTextWidth = (width * 0.84f).toInt()
             val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                textSize = 46f
+                textSize = 32f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 color = if (hookStyle == HookStyle.OUTLINE_WHITE) Color.WHITE else Color.BLACK
             }
@@ -110,7 +117,7 @@ object MediaProcessor {
             val staticLayout = StaticLayout.Builder
                 .obtain(hookText.trim(), 0, hookText.trim().length, textPaint, maxTextWidth)
                 .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                .setLineSpacing(8f, 1.0f)
+                .setLineSpacing(6f, 1.0f)
                 .build()
 
             val topY = height * 0.10f
@@ -124,12 +131,12 @@ object MediaProcessor {
                     color = if (hookStyle == HookStyle.YELLOW_BOX) Color.YELLOW else Color.WHITE
                     style = Paint.Style.FILL
                 }
-                val padX = 28f
-                val padY = 18f
+                val padX = 20f
+                val padY = 12f
                 val left = (width - maxLineW) / 2f - padX
                 val right = (width + maxLineW) / 2f + padX
                 val rect = RectF(left, topY - padY, right, topY + staticLayout.height + padY)
-                canvas.drawRoundRect(rect, 20f, 20f, bgPaint)
+                canvas.drawRoundRect(rect, 14f, 14f, bgPaint)
             }
 
             canvas.save()
@@ -137,7 +144,7 @@ object MediaProcessor {
 
             if (hookStyle == HookStyle.OUTLINE_WHITE) {
                 textPaint.style = Paint.Style.STROKE
-                textPaint.strokeWidth = 9f
+                textPaint.strokeWidth = 6f
                 textPaint.color = Color.BLACK
                 staticLayout.draw(canvas)
 
@@ -150,11 +157,10 @@ object MediaProcessor {
             canvas.restore()
         }
 
-        // 2. Gambar Watermark
         if (watermarkText.isNotBlank()) {
             val wm = watermarkText.trim()
             val wmPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                textSize = 34f
+                textSize = 24f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 textAlign = Paint.Align.CENTER
             }
@@ -165,7 +171,7 @@ object MediaProcessor {
             }
 
             wmPaint.style = Paint.Style.STROKE
-            wmPaint.strokeWidth = 6f
+            wmPaint.strokeWidth = 4f
             wmPaint.color = Color.argb(175, 0, 0, 0)
             canvas.drawText(wm, width / 2f, yPos, wmPaint)
 
@@ -173,24 +179,12 @@ object MediaProcessor {
             wmPaint.color = Color.argb(190, 255, 255, 255)
             canvas.drawText(wm, width / 2f, yPos, wmPaint)
         }
-
-        val file = File(cacheDir, "ov_static_${System.nanoTime()}.png")
-        file.outputStream().use { out ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-        }
-        bitmap.recycle()
-        return file
     }
 
-    private fun createSubtitleCueOverlay(cacheDir: File, cueText: String): File {
-        val width = 1080
-        val height = 1920
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-
+    private fun drawSubtitleOnCanvas(canvas: Canvas, width: Int, height: Int, cueText: String) {
         val maxTextWidth = (width * 0.82f).toInt()
         val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 44f
+            textSize = 30f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             color = Color.WHITE
         }
@@ -198,10 +192,9 @@ object MediaProcessor {
         val staticLayout = StaticLayout.Builder
             .obtain(cueText, 0, cueText.length, textPaint, maxTextWidth)
             .setAlignment(Layout.Alignment.ALIGN_CENTER)
-            .setLineSpacing(6f, 1.0f)
+            .setLineSpacing(4f, 1.0f)
             .build()
 
-        // Safe-zone di atas tombol interaksi bawah TikTok/Reels/Shorts
         val bottomY = height * 0.81f
         val topY = bottomY - staticLayout.height
 
@@ -209,7 +202,7 @@ object MediaProcessor {
         canvas.translate((width - maxTextWidth) / 2f, topY)
 
         textPaint.style = Paint.Style.STROKE
-        textPaint.strokeWidth = 9f
+        textPaint.strokeWidth = 6f
         textPaint.color = Color.BLACK
         staticLayout.draw(canvas)
 
@@ -218,13 +211,6 @@ object MediaProcessor {
         staticLayout.draw(canvas)
 
         canvas.restore()
-
-        val file = File(cacheDir, "ov_sub_${System.nanoTime()}.png")
-        file.outputStream().use { out ->
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-        }
-        bitmap.recycle()
-        return file
     }
 
     suspend fun renderClip(
@@ -238,131 +224,172 @@ object MediaProcessor {
         hookStyle: HookStyle,
         watermarkText: String,
         watermarkPos: WatermarkPos,
-        srtFile: File?
+        srtFile: File?,
+        onRenderProgress: ((Int) -> Unit)? = null
     ) = withContext(Dispatchers.IO) {
         YoutubeExtractor.ensureInitialized(context)
 
         val ffmpegBin = resolveFfmpegBinary(context)
         val ldLibraryPath = resolveLdLibraryPath(context)
-        val tempOverlays = mutableListOf<TimedOverlay>()
 
-        try {
-            // Siapkan layer PNG untuk Hook & Watermark
-            if (hookText.isNotBlank() || watermarkText.isNotBlank()) {
-                val staticPng = createStaticTextOverlay(
-                    cacheDir = context.cacheDir,
-                    hookText = hookText,
-                    hookStyle = hookStyle,
-                    watermarkText = watermarkText,
-                    watermarkPos = watermarkPos
-                )
-                tempOverlays.add(TimedOverlay(staticPng, null, null))
-            }
+        val expectedDurationSec = if (trimDurationMs != null && trimDurationMs > 0L) {
+            trimDurationMs / 1000.0
+        } else {
+            getVideoDurationSec(inputPath).coerceAtLeast(1.0)
+        }
 
-            // Siapkan layer PNG untuk setiap baris subtitle .srt
-            if (srtFile != null && srtFile.exists()) {
-                val cues = parseSrtCues(srtFile)
-                for (cue in cues) {
-                    val subPng = createSubtitleCueOverlay(context.cacheDir, cue.text)
-                    tempOverlays.add(TimedOverlay(subPng, cue.startSec, cue.endSec))
-                }
-            }
+        val cues = if (srtFile != null && srtFile.exists()) parseSrtCues(srtFile) else emptyList()
+        val hasAnyText = hookText.isNotBlank() || watermarkText.isNotBlank() || cues.isNotEmpty()
 
-            val cmd = mutableListOf<String>()
+        val cmd = mutableListOf<String>()
 
-            if (trimStartMs != null && trimDurationMs != null) {
-                cmd.add("-ss")
-                cmd.add(String.format(Locale.US, "%.3f", trimStartMs / 1000.0))
-            }
+        if (trimStartMs != null && trimDurationMs != null) {
+            cmd.add("-ss")
+            cmd.add(String.format(Locale.US, "%.3f", trimStartMs / 1000.0))
+        }
 
-            cmd.add("-i")
-            cmd.add(inputPath)
+        cmd.add("-i")
+        cmd.add(inputPath)
 
-            if (trimDurationMs != null) {
-                cmd.add("-t")
-                cmd.add(String.format(Locale.US, "%.3f", trimDurationMs / 1000.0))
-            }
+        if (trimDurationMs != null) {
+            cmd.add("-t")
+            cmd.add(String.format(Locale.US, "%.3f", trimDurationMs / 1000.0))
+        }
 
-            // Masukkan semua PNG overlay sebagai input tambahan (-i)
-            for (ov in tempOverlays) {
-                cmd.add("-i")
-                cmd.add(ov.imageFile.absolutePath)
-            }
-
-            val filterSteps = mutableListOf<String>()
-
-            // Langkah dasar: Bentuk kanvas video
-            when (layout) {
-                AspectLayout.BLUR_BG_9_16 -> {
-                    filterSteps.add("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg]")
-                    filterSteps.add("[0:v]scale=1080:-2:force_original_aspect_ratio=decrease[fg]")
-                    filterSteps.add("[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]")
-                }
-                AspectLayout.CROP_9_16 -> {
-                    filterSteps.add("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[v0]")
-                }
-                AspectLayout.ORIGINAL -> {
-                    filterSteps.add("[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2[v0]")
-                }
-            }
-
-            // Tempelkan setiap PNG overlay menggunakan filter 'overlay'
-            var currentLabel = "v0"
-            tempOverlays.forEachIndexed { idx, ov ->
-                val inputIdx = idx + 1
-                val scaledLabel = "ov_s$idx"
-                val nextLabel = "v${idx + 1}"
-
-                // Sesuaikan skala overlay PNG dengan dimensi video aktif (penting untuk mode ORIGINAL)
-                filterSteps.add("[$inputIdx:v][$currentLabel]scale2ref=w=iw:h=ih[$scaledLabel][base$idx]")
-
-                if (ov.startSec != null && ov.endSec != null) {
-                    val enableExpr = String.format(
-                        Locale.US,
-                        "between(t,%.3f,%.3f)",
-                        ov.startSec,
-                        ov.endSec
-                    )
-                    filterSteps.add("[base$idx][$scaledLabel]overlay=0:0:enable='$enableExpr'[$nextLabel]")
-                } else {
-                    filterSteps.add("[base$idx][$scaledLabel]overlay=0:0[$nextLabel]")
-                }
-                currentLabel = nextLabel
-            }
-
-            cmd.add("-filter_complex")
-            cmd.add(filterSteps.joinToString(";"))
-            cmd.add("-map")
-            cmd.add("[$currentLabel]")
-            cmd.add("-map")
-            cmd.add("0:a?")
-
+        // Input 1: Aliran overlay teks tunggal (4 fps cukup untuk transisi subtitle, hemat RAM & CPU)
+        val ovW = 720
+        val ovH = 1280
+        val ovFps = 4
+        if (hasAnyText) {
             cmd.addAll(
                 listOf(
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "22",
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac",
-                    "-b:a", "128k",
-                    "-movflags", "+faststart",
-                    "-y",
-                    outputPath
+                    "-f", "rawvideo",
+                    "-pix_fmt", "rgba",
+                    "-s", "${ovW}x${ovH}",
+                    "-r", "$ovFps",
+                    "-i", "pipe:0"
                 )
             )
-
-            val pb = ProcessBuilder(listOf(ffmpegBin) + cmd).apply {
-                environment()["LD_LIBRARY_PATH"] = ldLibraryPath
-                redirectErrorStream(true)
-            }
-            val process = pb.start()
-            val logOutput = process.inputStream.bufferedReader().use { it.readText() }
-            val exitCode = process.waitFor()
-            if (exitCode != 0) {
-                throw RuntimeException("FFmpeg gagal (kode $exitCode): ${logOutput.takeLast(350)}")
-            }
-        } finally {
-            tempOverlays.forEach { if (it.imageFile.exists()) it.imageFile.delete() }
         }
+
+        val filterSteps = mutableListOf<String>()
+        when (layout) {
+            AspectLayout.BLUR_BG_9_16 -> {
+                filterSteps.add("[0:v]scale=180:320:force_original_aspect_ratio=increase,crop=180:320,boxblur=6:2,scale=720:1280[bg]")
+                filterSteps.add("[0:v]scale=720:-2:force_original_aspect_ratio=decrease[fg]")
+                filterSteps.add("[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]")
+            }
+            AspectLayout.CROP_9_16 -> {
+                filterSteps.add("[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280[v0]")
+            }
+            AspectLayout.ORIGINAL -> {
+                filterSteps.add("[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2[v0]")
+            }
+        }
+
+        val finalVideoPad = if (hasAnyText) {
+            filterSteps.add("[1:v][v0]scale2ref=w=iw:h=ih[ov_s][base]")
+            filterSteps.add("[base][ov_s]overlay=0:0:shortest=1[vout]")
+            "[vout]"
+        } else {
+            "[v0]"
+        }
+
+        cmd.add("-filter_complex")
+        cmd.add(filterSteps.joinToString(";"))
+        cmd.add("-map")
+        cmd.add(finalVideoPad)
+        cmd.add("-map")
+        cmd.add("0:a?")
+
+        cmd.addAll(
+            listOf(
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "23",
+                "-threads", "0",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-y",
+                outputPath
+            )
+        )
+
+        val pb = ProcessBuilder(listOf(ffmpegBin) + cmd).apply {
+            environment()["LD_LIBRARY_PATH"] = ldLibraryPath
+            redirectErrorStream(true)
+        }
+        val process = pb.start()
+
+        // Thread pengumpan frame overlay RGBA ke stdin FFmpeg (mendukung ratusan baris subtitle tanpa batas)
+        val feederThread = if (hasAnyText) {
+            Thread {
+                val bitmap = Bitmap.createBitmap(ovW, ovH, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                val buffer = ByteBuffer.allocate(ovW * ovH * 4)
+                val totalFrames = ceil(expectedDurationSec * ovFps).toInt() + ovFps
+                var lastActiveCueIndex = -2
+                var cachedFrameBytes: ByteArray? = null
+
+                try {
+                    process.outputStream.use { stdin ->
+                        for (frameIdx in 0 until totalFrames) {
+                            val tSec = frameIdx.toDouble() / ovFps
+                            val activeIdx = cues.indexOfFirst { tSec >= it.startSec && tSec <= it.endSec }
+
+                            if (activeIdx != lastActiveCueIndex || cachedFrameBytes == null) {
+                                canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+                                drawStaticLayer(canvas, ovW, ovH, hookText, hookStyle, watermarkText, watermarkPos)
+                                if (activeIdx >= 0) {
+                                    drawSubtitleOnCanvas(canvas, ovW, ovH, cues[activeIdx].text)
+                                }
+                                buffer.rewind()
+                                bitmap.copyPixelsToBuffer(buffer)
+                                cachedFrameBytes = buffer.array().clone()
+                                lastActiveCueIndex = activeIdx
+                            }
+                            stdin.write(cachedFrameBytes)
+                        }
+                        stdin.flush()
+                    }
+                } catch (_: Exception) {
+                    // Pipa tertutup normal saat FFmpeg selesai
+                } finally {
+                    bitmap.recycle()
+                }
+            }.apply { start() }
+        } else {
+            null
+        }
+
+        val tailLines = ArrayDeque<String>(20)
+        val timeRegex = Regex("time=(\\d+):(\\d+):(\\d+\\.\\d+)")
+
+        process.inputStream.bufferedReader().useLines { lines ->
+            for (line in lines) {
+                if (tailLines.size >= 20) tailLines.removeFirst()
+                tailLines.addLast(line)
+
+                val match = timeRegex.find(line)
+                if (match != null && expectedDurationSec > 0.0) {
+                    val h = match.groupValues[1].toDoubleOrNull() ?: 0.0
+                    val m = match.groupValues[2].toDoubleOrNull() ?: 0.0
+                    val s = match.groupValues[3].toDoubleOrNull() ?: 0.0
+                    val curSec = h * 3600.0 + m * 60.0 + s
+                    val pct = ((curSec / expectedDurationSec) * 100.0).toInt().coerceIn(0, 99)
+                    onRenderProgress?.invoke(pct)
+                }
+            }
+        }
+
+        val exitCode = process.waitFor()
+        feederThread?.join(2000)
+
+        if (exitCode != 0) {
+            throw RuntimeException("FFmpeg gagal (kode $exitCode): ${tailLines.joinToString("\n").takeLast(350)}")
+        }
+        onRenderProgress?.invoke(100)
     }
 }

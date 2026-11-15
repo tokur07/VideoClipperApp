@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -53,9 +54,16 @@ class ClipperService : Service() {
         }
 
         serviceScope.launch {
-            processAllSegments(config)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VideoClipper::RenderLock")
+            wakeLock.acquire(30 * 60 * 1000L)
+            try {
+                processAllSegments(config)
+            } finally {
+                if (wakeLock.isHeld) wakeLock.release()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
 
         return START_NOT_STICKY
