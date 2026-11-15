@@ -6,8 +6,3 @@ Aplikasi pemotong video Android untuk TikTok, YouTube Shorts, dan Instagram Reel
 - **Tata Letak 9:16:** *Fit + Blurred Background* dan *Full Center Crop*.
 - **Teks Auto & Manual:** Auto-Subtitle CC YouTube, impor `.SRT` manual, teks *Hook* judul + *Auto-Part*, dan *Watermark* di area *safe-zone*.
 - **Background Rendering:** Berjalan di latar belakang menggunakan *Foreground Service* dengan progres notifikasi.
-
-## Cara Build APK di GitHub Actions
-1. Unggah seluruh isi folder `VideoClipperApp` ini ke root repositori GitHub Anda.
-2. Buka tab **Actions** -> pilih **Build Android APK** -> klik **Run workflow**.
-3. Setelah selesai, unduh file APK pada bagian **Artifacts** (`VideoClipper-Pro-apk`).
