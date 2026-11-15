@@ -10,17 +10,35 @@ object MediaProcessor {
 
     private fun resolveFfmpegBinary(context: Context): String {
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val nativeSoBin = File(nativeLibDir, "libffmpeg.so")
         val unpackedBin = File(
             context.noBackupFilesDir,
             "youtubedl-android/packages/ffmpeg/usr/bin/ffmpeg"
         )
-        val nativeSoBin = File(nativeLibDir, "libffmpeg.so")
 
         return when {
-            unpackedBin.exists() && unpackedBin.canExecute() -> unpackedBin.absolutePath
             nativeSoBin.exists() -> nativeSoBin.absolutePath
+            unpackedBin.exists() && unpackedBin.canExecute() -> unpackedBin.absolutePath
             else -> throw IllegalStateException("Binary FFmpeg tidak ditemukan di $nativeLibDir")
         }
+    }
+
+    private fun resolveLdLibraryPath(context: Context): String {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val ytDlBaseDir = File(context.noBackupFilesDir, "youtubedl-android")
+
+        val ffmpegLibDir = ytDlBaseDir.walkTopDown()
+            .firstOrNull { it.name == "libavdevice.so" }
+            ?.parentFile
+            ?.absolutePath
+
+        val pythonLibDir = File(ytDlBaseDir, "packages/python/usr/lib")
+            .takeIf { it.exists() }
+            ?.absolutePath
+
+        return listOfNotNull(ffmpegLibDir, pythonLibDir, nativeLibDir)
+            .distinct()
+            .joinToString(":")
     }
 
     private fun resolveSystemFont(): String {
@@ -76,7 +94,7 @@ object MediaProcessor {
         YoutubeExtractor.ensureInitialized(context)
 
         val ffmpegBin = resolveFfmpegBinary(context)
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val ldLibraryPath = resolveLdLibraryPath(context)
         val fontPath = resolveSystemFont()
         val overlayFilters = mutableListOf<String>()
 
@@ -182,7 +200,7 @@ object MediaProcessor {
         )
 
         val pb = ProcessBuilder(listOf(ffmpegBin) + cmd).apply {
-            environment()["LD_LIBRARY_PATH"] = nativeLibDir
+            environment()["LD_LIBRARY_PATH"] = ldLibraryPath
             redirectErrorStream(true)
         }
         val process = pb.start()
