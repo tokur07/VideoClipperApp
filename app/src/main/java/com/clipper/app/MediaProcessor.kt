@@ -1,13 +1,27 @@
 package com.clipper.app
 
 import android.content.Context
-import com.yausername.ffmpeg.FFmpeg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
 object MediaProcessor {
+
+    private fun resolveFfmpegBinary(context: Context): String {
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val unpackedBin = File(
+            context.noBackupFilesDir,
+            "youtubedl-android/packages/ffmpeg/usr/bin/ffmpeg"
+        )
+        val nativeSoBin = File(nativeLibDir, "libffmpeg.so")
+
+        return when {
+            unpackedBin.exists() && unpackedBin.canExecute() -> unpackedBin.absolutePath
+            nativeSoBin.exists() -> nativeSoBin.absolutePath
+            else -> throw IllegalStateException("Binary FFmpeg tidak ditemukan di $nativeLibDir")
+        }
+    }
 
     private fun resolveSystemFont(): String {
         val candidates = listOf(
@@ -61,6 +75,8 @@ object MediaProcessor {
     ) = withContext(Dispatchers.IO) {
         YoutubeExtractor.ensureInitialized(context)
 
+        val ffmpegBin = resolveFfmpegBinary(context)
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val fontPath = resolveSystemFont()
         val overlayFilters = mutableListOf<String>()
 
@@ -165,6 +181,15 @@ object MediaProcessor {
             )
         )
 
-        FFmpeg.getInstance().execute(cmd.toTypedArray())
+        val pb = ProcessBuilder(listOf(ffmpegBin) + cmd).apply {
+            environment()["LD_LIBRARY_PATH"] = nativeLibDir
+            redirectErrorStream(true)
+        }
+        val process = pb.start()
+        val logOutput = process.inputStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw RuntimeException("FFmpeg gagal (kode $exitCode): ${logOutput.takeLast(350)}")
+        }
     }
 }
