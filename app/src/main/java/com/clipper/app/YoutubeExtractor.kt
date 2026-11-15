@@ -15,8 +15,7 @@ data class ExtractedVideoMeta(
     val maxWidth: Int,
     val maxHeight: Int,
     val previewStreamUrl: String?,
-    val httpHeaders: Map<String, String>,
-    val hasSubtitles: Boolean
+    val httpHeaders: Map<String, String>
 )
 
 object YoutubeExtractor {
@@ -60,17 +59,13 @@ object YoutubeExtractor {
             }
             val previewUrl = previewFormat?.url ?: info.url
 
-            val hasSubs = (info.subtitles?.isNotEmpty() == true) ||
-                    (info.automaticCaptions?.isNotEmpty() == true)
-
             ExtractedVideoMeta(
                 title = info.title ?: "Video Online",
                 durationMs = info.duration.toLong() * 1000L,
                 maxWidth = w,
                 maxHeight = h,
                 previewStreamUrl = previewUrl,
-                httpHeaders = info.httpHeaders ?: emptyMap(),
-                hasSubtitles = hasSubs
+                httpHeaders = info.httpHeaders ?: emptyMap()
             )
         }
 

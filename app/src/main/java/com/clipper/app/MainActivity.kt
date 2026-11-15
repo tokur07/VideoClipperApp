@@ -296,12 +296,12 @@ class MainActivity : AppCompatActivity() {
                 isDirectStream = false
                 totalDurationMs = meta.durationMs
                 layoutResolution.visibility = View.VISIBLE
-                swAutoSub.isEnabled = meta.hasSubtitles
-                swAutoSub.isChecked = meta.hasSubtitles
+                swAutoSub.isEnabled = true
+                swAutoSub.isChecked = false
 
-                val subBadge = if (meta.hasSubtitles) "CC Tersedia" else "Tanpa CC"
+                
                 tvVideoInfo.text =
-                    "${meta.title}\nDurasi: ${SubtitleUtils.formatMsToHhMmSs(totalDurationMs)} | Max: ${meta.maxWidth}x${meta.maxHeight} | $subBadge"
+                    "${meta.title}\nDurasi: ${SubtitleUtils.formatMsToHhMmSs(totalDurationMs)} | Max: ${meta.maxWidth}x${meta.maxHeight}"
 
                 if (totalDurationMs > 0L) {
                     etEndTime.setText(SubtitleUtils.formatMsToHhMmSs(min(30_000L, totalDurationMs)))
