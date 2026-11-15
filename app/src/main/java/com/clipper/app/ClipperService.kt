@@ -47,7 +47,7 @@ class ClipperService : Service() {
 
         val initialNotif = buildNotification("Menyiapkan pemotongan video...", 0)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIF_ID, initialNotif, ServiceInfo.FOREGROUND_SERVICE_DATA_SYNC)
+            startForeground(NOTIF_ID, initialNotif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIF_ID, initialNotif)
         }
